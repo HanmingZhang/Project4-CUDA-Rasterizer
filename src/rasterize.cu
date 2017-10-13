@@ -46,7 +46,7 @@ namespace {
 		// glm::vec3 col;
 		 glm::vec2 texcoord0;
 		 TextureData* dev_diffuseTex = NULL;
-		// int texWidth, texHeight;
+		int diffuseTexWidth, diffuseTexHeight;
 		// ...
 	};
 
@@ -56,16 +56,20 @@ namespace {
 	};
 
 	struct Fragment {
-		glm::vec3 color;
+		glm::vec3 color; // color == texcoord0 + dev_diffuseTex
 
 		// TODO: add new attributes to your Fragment
 		// The attributes listed below might be useful, 
 		// but always feel free to modify on your own
 
-		// glm::vec3 eyePos;	// eye space position used for shading
-		// glm::vec3 eyeNor;
-		// VertexAttributeTexcoord texcoord0;
-		// TextureData* dev_diffuseTex;
+		glm::vec3 eyePos;	// eye space position used for shading
+		glm::vec3 eyeNor;
+
+		// We have directily read color from texture and store color in glm::vec3 color
+		// so we don't want uv and texture anymore
+
+		//glm::vec2 texcoord0;
+		//TextureData* dev_diffuseTex;
 		// ...
 	};
 
@@ -641,7 +645,28 @@ void _vertexTransformAndAssembly(
 
 		// TODO: Apply vertex assembly here
 		// Assemble all attribute arraies into the primitive array
+
+		VertexOut& this_dev_verticesOut = primitive.dev_verticesOut[vid];
+
+		glm::vec4 ClippingSpace_Pos = MVP * glm::vec4(primitive.dev_position[vid], 1.0f);
+		glm::vec4 NDC_Pos = (1.0f / ClippingSpace_Pos.w) * ClippingSpace_Pos;
+		glm::vec4 ScreenSpace_Pos = glm::vec4((NDC_Pos.x + 1.0f) * (float)width / 2.0f, 
+											  (1.0f - NDC_Pos.y) * (float)height / 2.0f, 
+											  NDC_Pos.z,
+											  NDC_Pos.w);
+
+
+		this_dev_verticesOut.pos = ScreenSpace_Pos;
+
+		this_dev_verticesOut.eyePos = glm::vec3(MV * glm::vec4(primitive.dev_position[vid], 1.0f));
+		this_dev_verticesOut.eyeNor = glm::normalize(MV_normal * primitive.dev_normal[vid]); // normalized
+		this_dev_verticesOut.texcoord0 = primitive.dev_texcoord0[vid];
 		
+		//Assume all vertices use just one diffuse texture
+		this_dev_verticesOut.dev_diffuseTex = primitive.dev_diffuseTex;	
+		this_dev_verticesOut.diffuseTexWidth = primitive.diffuseTexWidth;
+		this_dev_verticesOut.diffuseTexHeight = primitive.diffuseTexHeight;
+
 	}
 }
 
@@ -660,12 +685,12 @@ void _primitiveAssembly(int numIndices, int curPrimitiveBeginId, Primitive* dev_
 		// TODO: uncomment the following code for a start
 		// This is primitive assembly for triangles
 
-		//int pid;	// id for cur primitives vector
-		//if (primitive.primitiveMode == TINYGLTF_MODE_TRIANGLES) {
-		//	pid = iid / (int)primitive.primitiveType;
-		//	dev_primitives[pid + curPrimitiveBeginId].v[iid % (int)primitive.primitiveType]
-		//		= primitive.dev_verticesOut[primitive.dev_indices[iid]];
-		//}
+		int pid;	// id for cur primitives vector
+		if (primitive.primitiveMode == TINYGLTF_MODE_TRIANGLES) {
+			pid = iid / (int)primitive.primitiveType;
+			dev_primitives[pid + curPrimitiveBeginId].v[iid % (int)primitive.primitiveType]
+				= primitive.dev_verticesOut[primitive.dev_indices[iid]];
+		}
 
 
 		// TODO: other primitive types (point, line)
@@ -673,6 +698,192 @@ void _primitiveAssembly(int numIndices, int curPrimitiveBeginId, Primitive* dev_
 	
 }
 
+// test whether
+__device__ 
+bool isPosInTriange(glm::vec3 p,
+				    glm::vec3 p1, glm::vec3 p2, glm::vec3 p3) {
+	glm::vec3 v(p[0], p[1], 0.f);
+	glm::vec3 v1(p1[0], p1[1], 0.f);
+	glm::vec3 v2(p2[0], p2[1], 0.f);
+	glm::vec3 v3(p3[0], p3[1], 0.f);
+
+	float s = 0.5f * glm::length(glm::cross(v1 - v2, v3 - v2));
+	float s1 = 0.5f * glm::length(glm::cross(v - v2, v3 - v2));
+	float s2 = 0.5f * glm::length(glm::cross(v - v3, v1 - v3));
+	float s3 = 0.5f * glm::length(glm::cross(v - v1, v2 - v1));
+
+	return glm::abs(s1 + s2 + s3 - s) < 0.1f;
+}
+
+
+// p here should be glm::vec3 (ScreenSpace.x, ScreenSpace.y, 0)
+// p1, p2, p3 here should be glm::vec3(ScreenSpace.x, ScreenSpace.y, EyeSpace.z)
+__device__
+float depthValuePersCorrectionLerp(glm::vec3 p, 
+								   glm::vec3 p1, glm::vec3 p2, glm::vec3 p3)
+{	
+	glm::vec3 v1(p1[0], p1[1], 0.f);
+	glm::vec3 v2(p2[0], p2[1], 0.f);
+	glm::vec3 v3(p3[0], p3[1], 0.f);
+
+
+	float s = 0.5f * glm::length(glm::cross(v1 - v2, v3 - v2));
+	float s1 = 0.5f * glm::length(glm::cross(p - v2, v3 - v2));
+	float s2 = 0.5f * glm::length(glm::cross(p - v3, v1 - v3));
+	float s3 = 0.5f * glm::length(glm::cross(p - v1, v2 - v1));
+
+	return 1.0f / ((s1 / (p1[2] * s)) + (s2 / (p2[2] * s)) + (s3 / (p3[2] * s)));
+}
+
+// p, p1, p2, p3 here should be glm::vec3(ScreenSpace.x, ScreenSpace.y, EyeSpace.z)
+__device__
+glm::vec2 vec2AttributePersCorrectionLerp(glm::vec3 p,
+										  glm::vec3 p1, glm::vec3 p2, glm::vec3 p3,
+										  glm::vec2 attribute1, glm::vec2 attribute2, glm::vec2 attribute3)
+{	
+	glm::vec3 v(p[0], p[1], 0.f);
+	glm::vec3 v1(p1[0], p1[1], 0.f);
+	glm::vec3 v2(p2[0], p2[1], 0.f);
+	glm::vec3 v3(p3[0], p3[1], 0.f);
+
+
+	float s = 0.5f * glm::length(glm::cross(v1 - v2, v3 - v2));
+	float s1 = 0.5f * glm::length(glm::cross(v - v2, v3 - v2));
+	float s2 = 0.5f * glm::length(glm::cross(v - v3, v1 - v3));
+	float s3 = 0.5f * glm::length(glm::cross(v - v1, v2 - v1));
+
+	return p[2] * ((attribute1 / p1[2]) * (s1 / s)
+				 + (attribute2 / p2[2]) * (s2 / s)
+				 + (attribute3 / p3[2]) * (s3 / s));
+}
+
+// p, p1, p2, p3 here should be glm::vec3(ScreenSpace.x, ScreenSpace.y, EyeSpace.z)
+__device__
+glm::vec3 vec3AttributePersCorrectionLerp(glm::vec3 p,
+										  glm::vec3 p1, glm::vec3 p2, glm::vec3 p3,
+										  glm::vec3 attribute1, glm::vec3 attribute2, glm::vec3 attribute3)
+{
+	glm::vec3 v(p[0], p[1], 0.f);
+	glm::vec3 v1(p1[0], p1[1], 0.f);
+	glm::vec3 v2(p2[0], p2[1], 0.f);
+	glm::vec3 v3(p3[0], p3[1], 0.f);
+
+
+	float s = 0.5f * glm::length(glm::cross(v1 - v2, v3 - v2));
+	float s1 = 0.5f * glm::length(glm::cross(v - v2, v3 - v2));
+	float s2 = 0.5f * glm::length(glm::cross(v - v3, v1 - v3));
+	float s3 = 0.5f * glm::length(glm::cross(v - v1, v2 - v1));
+
+	return p[2] * ((attribute1 / p1[2]) * (s1 / s)
+				 + (attribute2 / p2[2]) * (s2 / s)
+				 + (attribute3 / p3[2]) * (s3 / s));
+}
+
+
+
+
+// Rasterizer - Fill method
+// Goal is to fill Fragment buffer
+__global__
+void rasterizer_fill(int numPrimitives, Primitive* primitives, Fragment* fragmentBuffer, int* depth, int w, int h) {
+	int primitiveIdx = (blockIdx.x * blockDim.x) + threadIdx.x;
+
+	if (primitiveIdx < numPrimitives) {
+		Primitive& thisPrimitive = primitives[primitiveIdx];
+		
+		//Assume all vertices in one primitive use one Diffuse texture
+		int diffuseTexWidth = thisPrimitive.v[0].diffuseTexWidth;
+		int diffuseTexHeight = thisPrimitive.v[0].diffuseTexHeight;
+		TextureData* textureData = thisPrimitive.v[0].dev_diffuseTex;
+
+		glm::vec3 t1(thisPrimitive.v[0].pos[0], thisPrimitive.v[0].pos[1], thisPrimitive.v[0].eyePos[2]);
+		glm::vec3 t2(thisPrimitive.v[1].pos[0], thisPrimitive.v[1].pos[1], thisPrimitive.v[1].eyePos[2]);
+		glm::vec3 t3(thisPrimitive.v[2].pos[0], thisPrimitive.v[2].pos[1], thisPrimitive.v[2].eyePos[2]);
+
+		//Use AABB
+		float minX = fminf(t1.x, fminf(t2.x, t3.x));
+		float maxX = fmaxf(t1.x, fmaxf(t2.x, t3.x));
+		float minY = fminf(t1.y, fminf(t2.y, t3.y));
+		float maxY = fmaxf(t1.y, fmaxf(t2.y, t3.y));
+
+		int startX = (int)glm::floor(minX);
+		int endX = (int)glm::ceil(maxX);
+
+		int startY = (int)glm::floor(minY);
+		int endY = (int)glm::ceil(maxY);
+		
+		for (int i = startY; i <= endY; i++) {
+			for (int j = startX; j <= endX; j++) {
+
+				// Test if this pos is in the triangle
+				if (isPosInTriange(glm::vec3(j, i, 0.f), t1, t2, t3)) {
+					//IMPORTANT! 
+					//Should interpolate Z (depth) value first
+					//z (depth) value is in camera(eye) space
+					float lerp_depth = depthValuePersCorrectionLerp(glm::vec3(j, i, 0.f), t1, t2, t3);
+
+					// OK... atomicMin only works for Int
+					// but we want more accuracy for our depth value
+					// so TRICK here!
+					// multiply a really large number to get accuracy
+					// just pay attention integar is between -2147483648 - 2147483647
+					// 10000 may be a acceptable number
+					int lerp_depth_int = (int)(lerp_depth * 10000.0f) ;
+
+					// do atomic depth writing
+					int fragmentIdx = j + (i * w);
+					int old = depth[fragmentIdx];
+					int assumed;
+
+					do {
+						assumed = old;
+						old = atomicMin(&depth[fragmentIdx], lerp_depth_int);
+					} while (assumed != old);
+
+					//must use depth[index] to read again!
+					if (lerp_depth_int <= depth[fragmentIdx]) {
+						// pass depth test, this fragment is good, we will use it
+						Fragment& thisFragment = fragmentBuffer[fragmentIdx];
+
+						glm::vec3 p((float)j, (float)i, lerp_depth);
+
+						glm::vec2 lerp_uv = vec2AttributePersCorrectionLerp(p,
+							t1, t2, t3,
+							thisPrimitive.v[0].texcoord0, thisPrimitive.v[1].texcoord0, thisPrimitive.v[2].texcoord0);
+
+
+						glm::vec3 lerp_eyePos = vec3AttributePersCorrectionLerp(p,
+							t1, t2, t3,
+							thisPrimitive.v[0].eyePos, thisPrimitive.v[1].eyePos, thisPrimitive.v[2].eyePos);
+						thisFragment.eyePos = lerp_eyePos;
+
+						glm::vec3 lerp_eyeNor = vec3AttributePersCorrectionLerp(p,
+							t1, t2, t3,
+							thisPrimitive.v[0].eyeNor, thisPrimitive.v[1].eyeNor, thisPrimitive.v[2].eyeNor);
+
+						lerp_eyeNor = glm::normalize(lerp_eyeNor); // normalized
+						thisFragment.eyeNor = lerp_eyeNor;
+
+						glm::ivec2 textSpaceCoord = glm::ivec2(diffuseTexWidth * lerp_uv.x, diffuseTexHeight * (lerp_uv.y));
+
+						int textIdx = textSpaceCoord.x + diffuseTexWidth * textSpaceCoord.y;
+
+						// Assume texture data are row major
+						// and there are 3 channels
+						int numOfTextureChannels = 3;
+						TextureData r = textureData[textIdx * numOfTextureChannels];
+						TextureData g = textureData[textIdx * numOfTextureChannels + 1];
+						TextureData b = textureData[textIdx * numOfTextureChannels + 2];
+
+						thisFragment.color = glm::vec3((float)r / 255.0f, (float)g / 255.0f, (float)b / 255.0f);
+					}
+				}
+
+			}
+		}
+	
+	}
+}
 
 
 /**
@@ -723,6 +934,24 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
 	initDepth << <blockCount2d, blockSize2d >> >(width, height, dev_depth);
 	
 	// TODO: rasterize
+	{
+		dim3 numThreadsPerBlock(128);
+
+		auto it = mesh2PrimitivesMap.begin();
+		auto itEnd = mesh2PrimitivesMap.end();
+
+		for (; it != itEnd; ++it) {
+			auto p = (it->second).begin();	// each primitive
+			auto pEnd = (it->second).end();
+			for (; p != pEnd; ++p) {
+				dim3 numBlocksForPrimitives((p->numPrimitives + numThreadsPerBlock.x - 1) / numThreadsPerBlock.x);
+				
+				rasterizer_fill << <numBlocksForPrimitives, numThreadsPerBlock >> > (p->numPrimitives, dev_primitives, dev_fragmentBuffer, dev_depth, width, height);
+				checkCUDAError("rasterizer_fill");
+				cudaDeviceSynchronize();
+			}
+		}
+	}
 
 
 
