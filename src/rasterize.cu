@@ -141,16 +141,23 @@ void sendImageToPBO(uchar4 *pbo, int w, int h, glm::vec3 *image) {
 * Writes fragment colors to the framebuffer
 */
 __global__
-void render(int w, int h, Fragment *fragmentBuffer, glm::vec3 *framebuffer) {
+void render(int w, int h, glm::vec3 lightPos, Fragment *fragmentBuffer, glm::vec3 *framebuffer) {
     int x = (blockIdx.x * blockDim.x) + threadIdx.x;
     int y = (blockIdx.y * blockDim.y) + threadIdx.y;
     int index = x + (y * w);
 
     if (x < w && y < h) {
-        framebuffer[index] = fragmentBuffer[index].color;
+        //framebuffer[index] = fragmentBuffer[index].color;
 
 		// TODO: add your fragment shader code here
+		// Lambert shading
+		Fragment thisFragment = fragmentBuffer[index];
 
+		glm::vec3 lightVec = lightPos - thisFragment.eyePos;
+		lightVec = glm::normalize(lightVec);
+
+		float light_cosTheta = glm::min(glm::max(glm::dot(thisFragment.eyeNor, lightVec), 0.0f), 1.0f);
+		framebuffer[index] = light_cosTheta * thisFragment.color;
     }
 }
 
@@ -864,18 +871,22 @@ void rasterizer_fill(int numPrimitives, Primitive* primitives, Fragment* fragmen
 						lerp_eyeNor = glm::normalize(lerp_eyeNor); // normalized
 						thisFragment.eyeNor = lerp_eyeNor;
 
-						glm::ivec2 textSpaceCoord = glm::ivec2(diffuseTexWidth * lerp_uv.x, diffuseTexHeight * (lerp_uv.y));
+						// if there is a diffuse texture
+						if (textureData != NULL) {
+							glm::ivec2 textSpaceCoord = glm::ivec2(diffuseTexWidth * lerp_uv.x, diffuseTexHeight * (lerp_uv.y));
 
-						int textIdx = textSpaceCoord.x + diffuseTexWidth * textSpaceCoord.y;
+							int textIdx = textSpaceCoord.x + diffuseTexWidth * textSpaceCoord.y;
 
-						// Assume texture data are row major
-						// and there are 3 channels
-						int numOfTextureChannels = 3;
-						TextureData r = textureData[textIdx * numOfTextureChannels];
-						TextureData g = textureData[textIdx * numOfTextureChannels + 1];
-						TextureData b = textureData[textIdx * numOfTextureChannels + 2];
+							// Assume texture data are row major
+							// and there are 3 channels
+							int numOfTextureChannels = 3;
+							TextureData r = textureData[textIdx * numOfTextureChannels];
+							TextureData g = textureData[textIdx * numOfTextureChannels + 1];
+							TextureData b = textureData[textIdx * numOfTextureChannels + 2];
 
-						thisFragment.color = glm::vec3((float)r / 255.0f, (float)g / 255.0f, (float)b / 255.0f);
+							thisFragment.color = glm::vec3((float)r / 255.0f, (float)g / 255.0f, (float)b / 255.0f);
+						}
+
 					}
 				}
 
@@ -953,10 +964,11 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
 		}
 	}
 
-
+	//light position for Lambert shading
+	glm::vec3 lightPos(3.0f, 6.0f, -5.0f);
 
     // Copy depthbuffer colors into framebuffer
-	render << <blockCount2d, blockSize2d >> >(width, height, dev_fragmentBuffer, dev_framebuffer);
+	render << <blockCount2d, blockSize2d >> >(width, height, lightPos, dev_fragmentBuffer, dev_framebuffer);
 	checkCUDAError("fragment shader");
     // Copy framebuffer into OpenGL buffer for OpenGL previewing
     sendImageToPBO<<<blockCount2d, blockSize2d>>>(pbo, width, height, dev_framebuffer);
