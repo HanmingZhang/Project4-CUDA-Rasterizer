@@ -33,6 +33,10 @@ using namespace std;
 int frame;
 int fpstracker;
 double seconds;
+
+double myShaderTimerSeconds;
+
+
 int fps = 0;
 GLuint positionLocation = 0;
 GLuint texcoordsLocation = 1;
@@ -98,6 +102,7 @@ void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods
 //----- util -----------------
 //----------------------------
 std::string getFilePathExtension(const std::string &FileName);
+
 
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
 void mouseMotionCallback(GLFWwindow* window, double xpos, double ypos);

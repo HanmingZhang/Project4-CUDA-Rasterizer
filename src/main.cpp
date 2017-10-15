@@ -52,6 +52,9 @@ int main(int argc, char **argv) {
 
     frame = 0;
     seconds = time(NULL);
+
+	myShaderTimerSeconds = time(NULL);
+
     fpstracker = 0;
 
     // Launch CUDA/GL
@@ -99,6 +102,12 @@ void mainLoop() {
 float scale = 1.0f;
 float x_trans = 0.0f, y_trans = 0.0f, z_trans = -10.0f;
 float x_angle = 0.0f, y_angle = 0.0f;
+
+int renderMode = 1;
+
+float self_rotation_angle = 0.0f;
+float self_rotation_speed = 0.1 * (PI / 360.0f);
+
 void runCuda() {
     // Map OpenGL buffer object for writing from CUDA on a single GPU
     // No data is moved (Win & Linux). When mapped to CUDA, OpenGL should not use this buffer
@@ -115,12 +124,28 @@ void runCuda() {
 		* glm::rotate(x_angle, glm::vec3(1.0f, 0.0f, 0.0f))
 		* glm::rotate(y_angle, glm::vec3(0.0f, 1.0f, 0.0f));
 
+
 	glm::mat3 MV_normal = glm::transpose(glm::inverse(glm::mat3(V) * glm::mat3(M)));
 	glm::mat4 MV = V * M;
 	glm::mat4 MVP = P * MV;
 
+
+	//time_t myShaderTimerSeconds2 = time(NULL);
+	//float deltaTime = myShaderTimerSeconds2 - myShaderTimerSeconds;
+	//myShaderTimerSeconds = myShaderTimerSeconds2;
+
+	self_rotation_angle += (self_rotation_speed);
+	//self_rotation_angle += (self_rotation_speed * deltaTime);
+
+	if (self_rotation_angle >= 360.0f) {
+		self_rotation_angle = 0.0f;
+	}
+
+
+	glm::mat4 self_Rotate_M = glm::rotate(self_rotation_angle, glm::vec3(0.0f, 1.0f, 0.0f));
+
     cudaGLMapBufferObject((void **)&dptr, pbo);
-	rasterize(dptr, MVP, MV, MV_normal);
+	rasterize(dptr, MVP, MV, MV_normal, renderMode, self_Rotate_M);
     cudaGLUnmapBufferObject(pbo);
 
     frame++;
@@ -164,6 +189,7 @@ bool init(const tinygltf::Scene & scene) {
 	glfwSetMouseButtonCallback(window, mouseButtonCallback);
 	glfwSetCursorPosCallback(window, mouseMotionCallback);
 	glfwSetScrollCallback(window, mouseWheelCallback);
+
 
 	{
 		std::map<std::string, std::vector<std::string> >::const_iterator it(
@@ -325,9 +351,23 @@ void errorCallback(int error, const char *description) {
 }
 
 void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods) {
-    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
-        glfwSetWindowShouldClose(window, GL_TRUE);
-    }
+
+	if (action == GLFW_PRESS) {
+		switch (key) {
+		case GLFW_KEY_ESCAPE:
+			glfwSetWindowShouldClose(window, GL_TRUE);
+			break;
+		case GLFW_KEY_1:
+			renderMode = 1;
+			break;
+		case GLFW_KEY_2:
+			renderMode = 2;
+			break;
+		case GLFW_KEY_3:
+			renderMode = 3;
+			break;
+		}
+	}
 }
 
 //----------------------------
@@ -396,5 +436,8 @@ void mouseMotionCallback(GLFWwindow* window, double xpos, double ypos)
 void mouseWheelCallback(GLFWwindow* window, double xoffset, double yoffset)
 {
 	const double s = 1.0;	// sensitivity
+
+	if (yoffset > 0 && z_trans > -1.5f) { return; }
+
 	z_trans += (float)(s * yoffset);
 }
