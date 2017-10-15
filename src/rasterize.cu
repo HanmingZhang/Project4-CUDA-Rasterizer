@@ -150,25 +150,27 @@ void render(int w, int h, glm::vec3 lightPos, Fragment *fragmentBuffer, glm::vec
         //framebuffer[index] = fragmentBuffer[index].color;
 
 		// TODO: add your fragment shader code here
+		Fragment thisFragment = fragmentBuffer[index];
 
 		// whole Triangle render mode
 		if (renderMode == 1) {
 			// Lambert shading
-			Fragment thisFragment = fragmentBuffer[index];
 
 			glm::vec3 lightVec = lightPos - thisFragment.eyePos;
 			lightVec = glm::normalize(lightVec);
 
 			float light_cosTheta = glm::min(glm::max(glm::dot(thisFragment.eyeNor, lightVec), 0.0f), 1.0f);
 
-			float light_intensity = light_cosTheta + 0.15f; // add ambient term so that we can still see points that are not lit by point light 
+			float ambientTerm = 0.15f;
+
+			float light_intensity = light_cosTheta + ambientTerm; // add ambient term so that we can still see points that are not lit by point light 
 
 			framebuffer[index] = light_intensity * thisFragment.color;
 		}
 
 		// wireframe or point mode
 		if (renderMode == 2 || renderMode == 3) {
-			framebuffer[index] = fragmentBuffer[index].color;
+			framebuffer[index] = thisFragment.color;
 		}
 
 
@@ -691,10 +693,10 @@ void _vertexTransformAndAssembly(
 		this_dev_verticesOut.pos = ScreenSpace_Pos;
 
 		// Handle eye space postion
-		this_dev_verticesOut.eyePos = glm::vec3(MV * glm::vec4(primitive.dev_position[vid], 1.0f));
+		this_dev_verticesOut.eyePos = glm::vec3(MV * _selfRotateM * glm::vec4(primitive.dev_position[vid], 1.0f));
 
 		// Handle eye space normal
-		this_dev_verticesOut.eyeNor = glm::normalize(MV_normal * primitive.dev_normal[vid]); // normalized
+		this_dev_verticesOut.eyeNor = glm::normalize(MV_normal * glm::mat3(_selfRotateM) * primitive.dev_normal[vid]); // normalized
 
 		// Handle uv
 		if (primitive.dev_texcoord0 != NULL) {
@@ -790,12 +792,14 @@ void fillThisFragmentBuffer(Fragment& thisFragment,
 		thisFragment.color = glm::vec3((float)r / 255.0f, (float)g / 255.0f, (float)b / 255.0f);
 	}
 
-	// Debug normal
+	
 	else {
-		
-		thisFragment.color = glm::vec3(0.5f * (lerp_eyeNor.x + 1.0f),
-								       0.5f * (lerp_eyeNor.y + 1.0f),
-									   0.5f * (lerp_eyeNor.z + 1.0f));
+		// Debug normal
+		//thisFragment.color = glm::vec3(0.5f * (lerp_eyeNor.x + 1.0f),
+		//						       0.5f * (lerp_eyeNor.y + 1.0f),
+		//							   0.5f * (lerp_eyeNor.z + 1.0f));
+
+		thisFragment.color = glm::vec3(0.25f, 0.25f, 0.85f);
 	}
 
 }
@@ -841,7 +845,7 @@ void rasterizer_fill_wholeTriangleMode(Fragment* fragmentBuffer, Primitive& this
 				// multiply a really large number to get accuracy
 				// just pay attention integar is between -2147483648 - 2147483647
 				// 10000 may be a acceptable number
-				int lerp_depth_int = (int)(lerp_depth * 10000.0f);
+				int lerp_depth_int = (int)(lerp_depth * 100000.0f);
 
 				// Atomic depth buffer writing
 				int fragmentIdx = j + (i * w);
@@ -1112,6 +1116,9 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
     // Copy depthbuffer colors into framebuffer
 	render << <blockCount2d, blockSize2d >> >(width, height, lightPos, dev_fragmentBuffer, dev_framebuffer, renderMode);
 	checkCUDAError("fragment shader");
+
+
+
     // Copy framebuffer into OpenGL buffer for OpenGL previewing
     sendImageToPBO<<<blockCount2d, blockSize2d>>>(pbo, width, height, dev_framebuffer);
     checkCUDAError("copy render result to pbo");

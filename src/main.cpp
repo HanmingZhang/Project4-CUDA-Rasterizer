@@ -106,7 +106,7 @@ float x_angle = 0.0f, y_angle = 0.0f;
 int renderMode = 1;
 
 float self_rotation_angle = 0.0f;
-float self_rotation_speed = 0.1 * (PI / 360.0f);
+float self_rotation_speed = 0.5f;
 
 void runCuda() {
     // Map OpenGL buffer object for writing from CUDA on a single GPU
@@ -129,17 +129,17 @@ void runCuda() {
 	glm::mat4 MV = V * M;
 	glm::mat4 MVP = P * MV;
 
+	// ------------------ Shader Timer Part ---------------------------
+	double myShaderTimerSeconds2 = glfwGetTime();
+	float deltaTime = myShaderTimerSeconds2 - myShaderTimerSeconds;
+	myShaderTimerSeconds = myShaderTimerSeconds2;
 
-	//time_t myShaderTimerSeconds2 = time(NULL);
-	//float deltaTime = myShaderTimerSeconds2 - myShaderTimerSeconds;
-	//myShaderTimerSeconds = myShaderTimerSeconds2;
-
-	self_rotation_angle += (self_rotation_speed);
-	//self_rotation_angle += (self_rotation_speed * deltaTime);
+	self_rotation_angle += (self_rotation_speed * deltaTime);
 
 	if (self_rotation_angle >= 360.0f) {
 		self_rotation_angle = 0.0f;
 	}
+	// -----------------------------------------------------------------
 
 
 	glm::mat4 self_Rotate_M = glm::rotate(self_rotation_angle, glm::vec3(0.0f, 1.0f, 0.0f));
@@ -214,6 +214,8 @@ bool init(const tinygltf::Scene & scene) {
 
     glUseProgram(passthroughProgram);
     glActiveTexture(GL_TEXTURE0);
+
+	myShaderTimerSeconds = glfwGetTime();
 
     return true;
 }
