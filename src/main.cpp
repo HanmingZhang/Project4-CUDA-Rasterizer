@@ -105,6 +105,8 @@ float x_angle = 0.0f, y_angle = 0.0f;
 
 int renderMode = 1;
 
+bool openPostProcess = true;
+
 float self_rotation_angle = 0.0f;
 float self_rotation_speed = 0.5f;
 
@@ -145,7 +147,7 @@ void runCuda() {
 	glm::mat4 self_Rotate_M = glm::rotate(self_rotation_angle, glm::vec3(0.0f, 1.0f, 0.0f));
 
     cudaGLMapBufferObject((void **)&dptr, pbo);
-	rasterize(dptr, MVP, MV, MV_normal, renderMode, self_Rotate_M);
+	rasterize(dptr, MVP, MV, MV_normal, renderMode, self_Rotate_M, openPostProcess);
     cudaGLUnmapBufferObject(pbo);
 
     frame++;
@@ -367,6 +369,9 @@ void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods
 			break;
 		case GLFW_KEY_3:
 			renderMode = 3;
+			break;
+		case GLFW_KEY_P:
+			openPostProcess = !openPostProcess;
 			break;
 		}
 	}
