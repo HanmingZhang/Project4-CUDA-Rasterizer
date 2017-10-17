@@ -132,15 +132,15 @@ void runCuda() {
 	glm::mat4 MVP = P * MV;
 
 	// ------------------ Shader Timer Part ---------------------------
-	//double myShaderTimerSeconds2 = glfwGetTime();
-	//float deltaTime = myShaderTimerSeconds2 - myShaderTimerSeconds;
-	//myShaderTimerSeconds = myShaderTimerSeconds2;
+	double myShaderTimerSeconds2 = glfwGetTime();
+	float deltaTime = myShaderTimerSeconds2 - myShaderTimerSeconds;
+	myShaderTimerSeconds = myShaderTimerSeconds2;
 
-	//self_rotation_angle += (self_rotation_speed * deltaTime);
+	self_rotation_angle += (self_rotation_speed * deltaTime);
 
-	//if (self_rotation_angle >= 360.0f) {
-	//	self_rotation_angle = 0.0f;
-	//}
+	if (self_rotation_angle >= 360.0f) {
+		self_rotation_angle = 0.0f;
+	}
 	// -----------------------------------------------------------------
 	glm::vec3 viewForwardVec = glm::vec3(0.0f, 0.0f, 1.0f);
 
