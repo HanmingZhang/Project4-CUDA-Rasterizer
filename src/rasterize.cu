@@ -18,9 +18,42 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <thrust/device_vector.h>
+#include <thrust/device_ptr.h>
+#include <thrust/remove.h>
 
 // TODO : do performance test here
+
+// --------------------------------------------
+// Shared memory use in Gaussian Blur
 #define GAUSSIANBLUR_SHAREDMEMORY
+
+// --------------------------------------------
+// SSAA
+//#define SSAAx2
+
+// --------------------------------------------
+// MSAA remains some problems in our project...
+// Fragment buffer size is fixed(width * height)
+// Ideally, dynamic size fragment buffer is wanted
+
+// In my case, I directly use SSAA fragment size in MSAA (2 * width * 2 * height)
+// and this stupid way cause its performance worse than SSAA....
+// Besides, some unwanted artifacts appear here
+
+//#define MSAAx2
+
+// --------------------------------------------
+// Backface culling
+// Pipeline way (remove unwanted primitive using thrust::remove_if)
+//#define BACKFACE_CULLING_IN_PIPELINE
+// naive way (directly do test in rasterizer)
+//#define BACKFACE_CULLING_IN_RASTERIZER
+
+// --------------------------------------------
+// Correct color interpolation between points on a primitive
+//#define CORRECT_COLOR_LERP
+
 
 namespace {
 
@@ -47,7 +80,11 @@ namespace {
 
 		 glm::vec3 eyePos;	// eye space position used for shading
 		 glm::vec3 eyeNor;	// eye space normal used for shading, cuz normal will go wrong after perspective transformation
-		// glm::vec3 col;
+
+#ifdef CORRECT_COLOR_LERP
+		 glm::vec3 col;
+#endif 
+
 		 glm::vec2 texcoord0;
 		 TextureData* dev_diffuseTex = NULL;
 		int diffuseTexWidth, diffuseTexHeight;
@@ -114,6 +151,12 @@ static int height = 0;
 
 static int totalNumPrimitives = 0;
 static Primitive *dev_primitives = NULL;
+
+
+#ifdef BACKFACE_CULLING_IN_PIPELINE
+static Primitive *dev_primitives_after_backfaceCulling = NULL;
+#endif 
+
 static Fragment *dev_fragmentBuffer = NULL;
 
 static glm::vec3 *dev_framebuffer = NULL;
@@ -121,12 +164,13 @@ static glm::vec3 *dev_framebuffer = NULL;
 
 //Used in post-processing
 static glm::vec3 *dev_framebuffer1 = NULL;
-
 static glm::vec3 *dev_framebuffer_DownScaleBy10 = NULL;
 static glm::vec3 *dev_framebuffer_DownScaleBy10_2 = NULL;
 
 
 static int * dev_depth = NULL;	// you might need this buffer when doing depth test
+
+
 
 /**
  * Kernel that writes the image to the OpenGL PBO directly.
@@ -146,6 +190,7 @@ void sendImageToPBO(uchar4 *pbo, int w, int h, glm::vec3 *image, int framebuffer
 			framebufferIndex = x + (y * w);
 		}
 		else {
+			// for downscale frame buffer debug
 			framebufferIndex = (x / downScaleRate) + framebufferEdgeOffset + (((y / downScaleRate) + framebufferEdgeOffset) * (downScale_w + 2 * framebufferEdgeOffset));
 		}
 
@@ -160,6 +205,44 @@ void sendImageToPBO(uchar4 *pbo, int w, int h, glm::vec3 *image, int framebuffer
         pbo[index].z = color.z;
     }
 }
+
+#if defined(SSAAx2) || defined(MSAAx2)
+
+// w, h should be Nx downscale image size
+// image should be supersample buffer data
+__global__
+void sendImageToPBO_AAxN(uchar4 *pbo, int w, int h, glm::vec3 *image, int SSAA_Rate) {
+	int x = (blockIdx.x * blockDim.x) + threadIdx.x;
+	int y = (blockIdx.y * blockDim.y) + threadIdx.y;
+
+	if (x < w && y < h) {
+
+		int index = x + (y * w);
+
+		float totalSubSampleNumber = (float)SSAA_Rate * (float)SSAA_Rate;
+
+		glm::vec3 color = glm::vec3(0.0f);
+		for (int i = 0; i < SSAA_Rate; i++) {
+			for (int j = 0; j < SSAA_Rate; j++) {
+				int subSamplePixelX = SSAA_Rate * x + i;
+				int subSamplePixelY = SSAA_Rate * y + j;
+
+				int subSamplePixelIndex = subSamplePixelX + (subSamplePixelY * w * SSAA_Rate);
+				color.x += glm::clamp(image[subSamplePixelIndex].x, 0.0f, 1.0f) * 255.0;
+				color.y += glm::clamp(image[subSamplePixelIndex].y, 0.0f, 1.0f) * 255.0;
+				color.z += glm::clamp(image[subSamplePixelIndex].z, 0.0f, 1.0f) * 255.0;
+			}
+		}
+		
+		// Each thread writes one pixel location in the texture (textel)
+		pbo[index].w = 0;
+		pbo[index].x = color.x / totalSubSampleNumber;
+		pbo[index].y = color.y / totalSubSampleNumber;
+		pbo[index].z = color.z / totalSubSampleNumber;
+	}
+}
+#endif
+
 
 /** 
 * Writes fragment colors to the framebuffer
@@ -191,6 +274,7 @@ void render(int w, int h, glm::vec3 lightPos, Fragment *fragmentBuffer, glm::vec
 			float light_intensity = light_power * light_cosTheta + ambientTerm; // add ambient term so that we can still see points that are not lit by point light 
 
 			framebuffer[index] = light_intensity * thisFragment.color;
+
 		}
 
 		// wireframe or point mode
@@ -384,6 +468,7 @@ void sampleDownScaleSample(int downScale_w, int downScale_h, int downScaleRate,
 				thisFrameBufferCol += framebuffer[ori_framebuffer_index];
 			}
 		}
+		//take the average value of samples
 		thisFrameBufferCol *= (1.0f / totalSampleNumber);
 	}
 }
@@ -435,8 +520,16 @@ void combineFrameBuffer(int w, int h, glm::vec3 *mainScene_framebuffer, glm::vec
 int GaussianBlurEdgeRoom = 5;
 
 void rasterizeInit(int w, int h) {
-    width = w;
-    height = h;
+
+#if defined(SSAAx2) || defined(MSAAx2)
+	width = 2 * w;
+	height = 2 * h;
+#else
+	width = w;
+	height = h;
+#endif
+
+    
 	cudaFree(dev_fragmentBuffer);
 	cudaMalloc(&dev_fragmentBuffer, width * height * sizeof(Fragment));
 	cudaMemset(dev_fragmentBuffer, 0, width * height * sizeof(Fragment));
@@ -458,7 +551,6 @@ void rasterizeInit(int w, int h) {
 	cudaMalloc(&dev_framebuffer_DownScaleBy10_2, ((width / downScaleRate) + 2 * GaussianBlurEdgeRoom) * ((height / downScaleRate) + 2 * GaussianBlurEdgeRoom) * sizeof(glm::vec3));
 	cudaMemset(dev_framebuffer_DownScaleBy10_2, 0, ((width / downScaleRate) + 2 * GaussianBlurEdgeRoom) * ((height / downScaleRate) + 2 * GaussianBlurEdgeRoom) * sizeof(glm::vec3));
 
-    
 	cudaFree(dev_depth);
 	cudaMalloc(&dev_depth, width * height * sizeof(int));
 
@@ -896,6 +988,10 @@ void rasterizeSetBuffers(const tinygltf::Scene & scene) {
 	// 3. Malloc for dev_primitives
 	{
 		cudaMalloc(&dev_primitives, totalNumPrimitives * sizeof(Primitive));
+
+#ifdef BACKFACE_CULLING_IN_PIPELINE
+		cudaMalloc(&dev_primitives_after_backfaceCulling, totalNumPrimitives * sizeof(Primitive));
+#endif
 	}
 	
 
@@ -983,6 +1079,18 @@ void _vertexTransformAndAssembly(
 			this_dev_verticesOut.diffuseTexHeight = primitive.diffuseTexHeight;
 		}
 
+#ifdef CORRECT_COLOR_LERP
+		if (vid % 3 == 0) {
+			this_dev_verticesOut.col = glm::vec3(0.95f, 0.25f, 0.25f);
+		}
+		else if (vid % 3 == 1) {
+			this_dev_verticesOut.col = glm::vec3(0.25f, 0.95f, 0.25f);
+		}
+		else if (vid % 3 == 2) {
+			this_dev_verticesOut.col = glm::vec3(0.25f, 0.25f, 0.95f);
+		}
+#endif 
+
 	}
 }
 
@@ -1012,6 +1120,8 @@ void _primitiveAssembly(int numIndices, int curPrimitiveBeginId, Primitive* dev_
 	
 }
 
+
+
 __device__
 void fillThisFragmentBuffer(Fragment& thisFragment,
 						    glm::vec3 p, 
@@ -1028,7 +1138,9 @@ void fillThisFragmentBuffer(Fragment& thisFragment,
 		p,
 		t1, t2, t3,
 		v1.eyePos, v2.eyePos, v3.eyePos);
+
 	thisFragment.eyePos = lerp_eyePos;
+
 
 	// Handle Normals (assume gltf always has this property)
 	glm::vec3 lerp_eyeNor = vec3AttributePersCorrectionLerp(
@@ -1037,7 +1149,9 @@ void fillThisFragmentBuffer(Fragment& thisFragment,
 		v1.eyeNor, v2.eyeNor, v3.eyeNor);
 
 	lerp_eyeNor = glm::normalize(lerp_eyeNor); // normalized
+
 	thisFragment.eyeNor = lerp_eyeNor;
+
 
 	// Handle UV (assume gltf always has this property)
 	glm::vec2 lerp_uv = vec2AttributePersCorrectionLerp(
@@ -1058,19 +1172,27 @@ void fillThisFragmentBuffer(Fragment& thisFragment,
 		TextureData g = textureData[textIdx * numOfTextureChannels + 1];
 		TextureData b = textureData[textIdx * numOfTextureChannels + 2];
 
+
 		thisFragment.color = glm::vec3((float)r / 255.0f, (float)g / 255.0f, (float)b / 255.0f);
 	}
 
-	
 	else {
 		// Debug normal
 		//thisFragment.color = glm::vec3(0.5f * (lerp_eyeNor.x + 1.0f),
 		//						       0.5f * (lerp_eyeNor.y + 1.0f),
 		//							   0.5f * (lerp_eyeNor.z + 1.0f));
+#ifdef CORRECT_COLOR_LERP
+		// Handle Colors
+		glm::vec3 lerp_col = vec3AttributePersCorrectionLerp(
+			p,
+			t1, t2, t3,
+			v1.col, v2.col, v3.col);
 
+		thisFragment.color = lerp_col;
+#else
 		thisFragment.color = glm::vec3(0.95f, 0.95f, 0.95f);
+#endif
 	}
-
 }
 
 
@@ -1080,7 +1202,7 @@ __device__
 void rasterizer_fill_wholeTriangleMode(Fragment* fragmentBuffer, Primitive& thisPrimitive, int* depth,
 									   glm::vec3 t1, glm::vec3 t2, glm::vec3 t3,
 									   int w, int h) 
-{
+{	
 	//Use AABB
 	float minX = fminf(t1.x, fminf(t2.x, t3.x));
 	float maxX = fmaxf(t1.x, fmaxf(t2.x, t3.x));
@@ -1089,14 +1211,117 @@ void rasterizer_fill_wholeTriangleMode(Fragment* fragmentBuffer, Primitive& this
 
 	// make sure AABB is inside screen
 	int startX = minX < 0 ? 0 : (int)glm::floor(minX);
-	int endX = maxX > w ? w : (int)glm::ceil(maxX);
+	int endX   = maxX > w ? w : (int)glm::ceil(maxX);
 
 	int startY = minY < 0 ? 0 : (int)glm::floor(minY);
-	int endY = maxY > h ? h : (int)glm::ceil(maxY);
+	int endY   = maxY > h ? h : (int)glm::ceil(maxY);
+
+#ifdef MSAAx2
+	for (int i = startY; i <= endY; i += 2) {
+		for (int j = startX; j <= endX; j += 2) {
+
+			// if point is on(very close, depends on epsilon) the edge of triangle
+			if (isPointOnTriangleEdge(glm::vec2(j + 0.5f, i + 0.5f), t1, t2, t3)) {
+				// do Multi sample
+				for (int p = 0; p < 2; p++) {
+					for (int q = 0; q < 2; q++) {
+						float lerp_depth = depthValuePersCorrectionLerp(glm::vec3(j + q, i + p, 0.f), t1, t2, t3);
+						int lerp_depth_int = (int)(lerp_depth * 100000.0f);
+						// Atomic depth buffer writing
+						int fragmentIdx = (j + q) + ((i + p) * w);
+						int old = depth[fragmentIdx];
+						int assumed;
+
+						do {
+							assumed = old;
+							old = atomicMin(&depth[fragmentIdx], lerp_depth_int);
+						} while (assumed != old);
+
+						//must use depth[index] to read again!
+						if (lerp_depth_int <= depth[fragmentIdx]) {
+							// pass depth test, this fragment is good, we will use it
+							glm::vec3 p(j + q, i + p, lerp_depth);
+
+							// fill this fragment Buffer
+							fillThisFragmentBuffer(fragmentBuffer[fragmentIdx],
+								p,
+								t1, t2, t3,
+								thisPrimitive.v[0], thisPrimitive.v[1], thisPrimitive.v[2]);
+						}
+					}
+				}
+			}
+
+			// if point is not on the edge of triangle
+			// but if it's inside the tirangle
+			else if (isPosInTriange(glm::vec3(j + 0.5f, i + 0.5f, 0.f), t1, t2, t3)) {
+				float lerp_depth = depthValuePersCorrectionLerp(glm::vec3(j + 0.5f, i + 0.5f, 0.f), t1, t2, t3);
+				int lerp_depth_int = (int)(lerp_depth * 100000.0f);
+				
+				glm::vec3 p(j + 0.5f, i + 0.5f, lerp_depth);
+
+				// ----------- fill sub-Sample 1 -----------------
+				// Atomic depth buffer writing
+				int fragmentIdx = j + (i * w);
+				int old = depth[fragmentIdx];
+				int assumed;
+				do {
+					assumed = old;
+					old = atomicMin(&depth[fragmentIdx], lerp_depth_int);
+				} while (assumed != old);
+
+				if (lerp_depth_int <= depth[fragmentIdx]) {
+					// fill this fragment Buffer
+					fillThisFragmentBuffer(fragmentBuffer[fragmentIdx],
+						p,
+						t1, t2, t3,
+						thisPrimitive.v[0], thisPrimitive.v[1], thisPrimitive.v[2]);
+				}
+
+				// ----------- fill sub-Sample 2 -----------------
+				old = depth[fragmentIdx + 1];
+				do {
+					assumed = old;
+					old = atomicMin(&depth[fragmentIdx + 1], lerp_depth_int);
+				} while (assumed != old);
+				if (lerp_depth_int <= depth[fragmentIdx + 1]) {
+					// fill this fragment Buffer
+					fragmentBuffer[fragmentIdx + 1] = fragmentBuffer[fragmentIdx];
+				}
+
+				// ----------- fill sub-Sample 3 -----------------
+				old = depth[fragmentIdx + w];
+				do {
+					assumed = old;
+					old = atomicMin(&depth[fragmentIdx + w], lerp_depth_int);
+				} while (assumed != old);
+				if (lerp_depth_int <= depth[fragmentIdx + w]) {
+					// fill this fragment Buffer
+					fragmentBuffer[fragmentIdx + w] = fragmentBuffer[fragmentIdx];
+				}
+
+				// ----------- fill sub-Sample 4 -----------------
+				old = depth[fragmentIdx + w + 1];
+				do {
+					assumed = old;
+					old = atomicMin(&depth[fragmentIdx + w + 1], lerp_depth_int);
+				} while (assumed != old);
+				if (lerp_depth_int <= depth[fragmentIdx + w + 1]) {
+					// fill this fragment Buffer
+					fragmentBuffer[fragmentIdx + w + 1] = fragmentBuffer[fragmentIdx];
+
+				}
+
+				
+			}
+
+		}
+	}
+
+#else
 
 	for (int i = startY; i <= endY; i++) {
 		for (int j = startX; j <= endX; j++) {
-
 			// Test if this pos is in the triangle
 			if (isPosInTriange(glm::vec3(j, i, 0.f), t1, t2, t3)) {
 
@@ -1140,9 +1365,11 @@ void rasterizer_fill_wholeTriangleMode(Fragment* fragmentBuffer, Primitive& this
 
 				}
 			}
-
 		}
 	}
+
+#endif // MSAAx2
+
 }
 
 // Rasterizer - Fill method
@@ -1270,26 +1497,37 @@ void rasterizer_fill_pointMode(Fragment* fragmentBuffer, int* depth,
 // Rasterizer - Fill method
 // Goal is to fill Fragment buffer
 __global__
-void rasterizer_fill(int numPrimitives, int curPrimitiveBeginId, Primitive* primitives, Fragment* fragmentBuffer, int* depth, int w, int h, int renderMode) {
+void rasterizer_fill(int numPrimitives, int curPrimitiveBeginId, Primitive* primitives, Fragment* fragmentBuffer, int* depth, int w, int h, int renderMode, glm::vec3 viewForwardVec)
+{
 	int primitiveIdx = (blockIdx.x * blockDim.x) + threadIdx.x;
 
 	if (primitiveIdx < numPrimitives) {
+
+#ifdef BACKFACE_CULLING_IN_PIPELINE
+		Primitive& thisPrimitive = primitives[primitiveIdx];
+#else
 		Primitive& thisPrimitive = primitives[primitiveIdx + curPrimitiveBeginId];
+#endif 
 
-		//glm::vec3 t1(thisPrimitive.v[0].pos[0], thisPrimitive.v[0].pos[1], thisPrimitive.v[0].eyePos[2]);
+#ifdef BACKFACE_CULLING_IN_RASTERIZER
+		// Naive Back-face culling
+		if (glm::dot(thisPrimitive.v[0].eyeNor, viewForwardVec) < 0 && 
+			glm::dot(thisPrimitive.v[1].eyeNor, viewForwardVec) < 0 &&
+			glm::dot(thisPrimitive.v[2].eyeNor, viewForwardVec) < 0) {
+			return;
+		}
+#endif
+		// need to use NDC depth value, so that all depth are realtive to near clip
 		glm::vec3 t1(thisPrimitive.v[0].pos[0], thisPrimitive.v[0].pos[1], thisPrimitive.v[0].pos[2]);
-
-		//glm::vec3 t2(thisPrimitive.v[1].pos[0], thisPrimitive.v[1].pos[1], thisPrimitive.v[1].eyePos[2]);
 		glm::vec3 t2(thisPrimitive.v[1].pos[0], thisPrimitive.v[1].pos[1], thisPrimitive.v[1].pos[2]);
-
-		//glm::vec3 t3(thisPrimitive.v[2].pos[0], thisPrimitive.v[2].pos[1], thisPrimitive.v[2].eyePos[2]);
 		glm::vec3 t3(thisPrimitive.v[2].pos[0], thisPrimitive.v[2].pos[1], thisPrimitive.v[2].pos[2]);
 
 		// Rasterize whole triangle
 		if (renderMode == 1) {
 			rasterizer_fill_wholeTriangleMode(fragmentBuffer, thisPrimitive, depth, 
 											  t1, t2, t3,
-											  w, h);
+											  w, h
+											 );
 		}
 
 		// Rasterize wireframe
@@ -1309,17 +1547,35 @@ void rasterizer_fill(int numPrimitives, int curPrimitiveBeginId, Primitive* prim
 	}
 }
 
+#ifdef BACKFACE_CULLING_IN_PIPELINE
+
+struct isBackFacing
+{	
+	glm::vec3 viewForwardVec;
+	isBackFacing(glm::vec3 vec) : viewForwardVec(vec) {};
+
+	__host__ __device__
+	bool  operator()(const Primitive x)
+	{
+		return (glm::dot(x.v[0].eyeNor, viewForwardVec) < 0 &&
+				glm::dot(x.v[1].eyeNor, viewForwardVec) < 0 &&
+				glm::dot(x.v[2].eyeNor, viewForwardVec) < 0) ;
+	}
+};
+#endif
+
 
 /**
  * Perform rasterization.
  */
 void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const glm::mat3 MV_normal, 
 	int renderMode, glm::mat4 selfRotateM,
-	bool openPostProcess) {
+	bool openPostProcess, 
+	glm::vec3 viewForwardVec) {
     int sideLength2d = 8;
     dim3 blockSize2d(sideLength2d, sideLength2d);
     dim3 blockCount2d((width  - 1) / blockSize2d.x + 1,
-		(height - 1) / blockSize2d.y + 1);
+					  (height - 1) / blockSize2d.y + 1);
 
 	// Execute your rasterization pipeline here
 	// (See README for rasterization pipeline outline.)
@@ -1357,8 +1613,9 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
 	}
 	
 	cudaMemset(dev_fragmentBuffer, 0, width * height * sizeof(Fragment));
+
 	initDepth << <blockCount2d, blockSize2d >> >(width, height, dev_depth);
-	
+
 	// rasterize
 	{	
 		curPrimitiveBeginId = 0;
@@ -1373,10 +1630,37 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
 			for (; p != pEnd; ++p) {
 				dim3 numBlocksForPrimitives((p->numPrimitives + numThreadsPerBlock.x - 1) / numThreadsPerBlock.x);
 				
-				rasterizer_fill << <numBlocksForPrimitives, numThreadsPerBlock >> > (p->numPrimitives, curPrimitiveBeginId, dev_primitives, dev_fragmentBuffer, dev_depth, width, height, renderMode);
+#ifdef BACKFACE_CULLING_IN_PIPELINE
+				// First copy Primitives to a new array
+				cudaMemcpy(dev_primitives_after_backfaceCulling, dev_primitives + curPrimitiveBeginId, p->numPrimitives * sizeof(Primitive), cudaMemcpyDeviceToDevice);
+
+				// Remove primitves facing backwards
+				thrust::device_ptr<Primitive> dev_thrust_primitves(dev_primitives_after_backfaceCulling);
+				int newPrimitiveSize = thrust::remove_if(dev_thrust_primitves, dev_thrust_primitves + p->numPrimitives, isBackFacing(viewForwardVec)) - dev_thrust_primitves;
+				
+				// Calculate new block size
+				numBlocksForPrimitives = dim3((newPrimitiveSize + numThreadsPerBlock.x - 1) / numThreadsPerBlock.x);
+
+				// rasterize based on new calculated primitives array
+				rasterizer_fill << <numBlocksForPrimitives, numThreadsPerBlock >> >
+					(newPrimitiveSize, curPrimitiveBeginId,
+					 dev_primitives_after_backfaceCulling, dev_fragmentBuffer, dev_depth,
+					 width, height, renderMode,
+					 viewForwardVec);
 				checkCUDAError("rasterizer_fill");
 				cudaDeviceSynchronize();
 				curPrimitiveBeginId += p->numPrimitives;
+
+#else
+				rasterizer_fill << <numBlocksForPrimitives, numThreadsPerBlock >> > 
+					(p->numPrimitives, curPrimitiveBeginId, 
+					 dev_primitives, dev_fragmentBuffer, dev_depth, 
+					 width, height, renderMode,
+					 viewForwardVec);
+				checkCUDAError("rasterizer_fill");
+				cudaDeviceSynchronize();
+				curPrimitiveBeginId += p->numPrimitives;
+#endif
 			}
 		}
 	}
@@ -1419,17 +1703,31 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
 		//---------------------- Bloom Effect Ends --------------------------------
 
 
+#if defined(SSAAx2) || defined(MSAAx2)
+		dim3 blockCount2d_AAx2_DownScaleBy2(((width / 2) - 1)  / blockSize2d.x + 1,
+										      ((height / 2) - 1) / blockSize2d.y + 1);
+		sendImageToPBO_AAxN << <blockCount2d_AAx2_DownScaleBy2, blockSize2d >> > (pbo, width / 2, height / 2, dev_framebuffer1, 2);
 
+#else
 		// Copy framebuffer into OpenGL buffer for OpenGL previewing
 		sendImageToPBO << <blockCount2d, blockSize2d >> > (pbo, width, height, dev_framebuffer1, GaussianBlurEdgeRoom, width / 1, 1);
 
 		// Downscale Debug
 		//sendImageToPBO << <blockCount2d, blockSize2d >> >(pbo, width, height, dev_framebuffer_DownScaleBy10, GaussianBlurEdgeRoom, width / downScaleRate, downScaleRate);
-
+#endif
 		checkCUDAError("copy render result to pbo");
 	}
+
+	//Ignore post processing stage
 	else {
+#if defined(SSAAx2) || defined(MSAAx2)
+		dim3 blockCount2d_AAx2_DownScaleBy2(((width / 2) - 1)  / blockSize2d.x + 1,
+											  ((height / 2) - 1) / blockSize2d.y + 1);
+		sendImageToPBO_AAxN << <blockCount2d_AAx2_DownScaleBy2, blockSize2d >> > (pbo, width / 2, height / 2, dev_framebuffer, 2);
+
+#else
 		sendImageToPBO << <blockCount2d, blockSize2d >> > (pbo, width, height, dev_framebuffer, GaussianBlurEdgeRoom, width / 1, 1);
+#endif
 	}
 }
 
@@ -1461,6 +1759,11 @@ void rasterizeFree() {
 
     cudaFree(dev_primitives);
     dev_primitives = NULL;
+
+#ifdef BACKFACE_CULLING_IN_PIPELINE
+	cudaFree(dev_primitives_after_backfaceCulling);
+	dev_primitives_after_backfaceCulling = NULL;
+#endif
 
 	cudaFree(dev_fragmentBuffer);
 	dev_fragmentBuffer = NULL;

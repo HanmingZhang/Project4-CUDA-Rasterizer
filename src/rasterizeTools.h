@@ -207,3 +207,38 @@ glm::vec3 vec3AttributePersCorrectionLerp(glm::vec3 p,
 		+ (attribute2 / p2[2]) * (s2 / s)
 		+ (attribute3 / p3[2]) * (s3 / s));
 }
+
+
+__device__
+bool isPointOnTriangleEdge(glm::vec2 p, glm::vec3 t1, glm::vec3 t2, glm::vec3 t3) {
+
+	glm::vec3 tris[3];
+	tris[0] = t1;
+	tris[1] = t2;
+	tris[2] = t3;
+
+	glm::vec3 barycentricCoord = calculateBarycentricCoordinate(tris, p);
+
+	float Epsilon = 0.1f;
+
+	if (glm::abs(barycentricCoord.x) < Epsilon) {
+		if (barycentricCoord.y >= 0.0f && barycentricCoord.y <= 1.0f &&
+			barycentricCoord.z >= 0.0f && barycentricCoord.z <= 1.0f) {
+			return true;
+		}
+	}
+	else if (glm::abs(barycentricCoord.y) < Epsilon) {
+		if (barycentricCoord.x >= 0.0f && barycentricCoord.x <= 1.0f &&
+			barycentricCoord.z >= 0.0f && barycentricCoord.z <= 1.0f) {
+			return true;
+		}
+	}
+	else if (glm::abs(barycentricCoord.z) < Epsilon) {
+		if (barycentricCoord.y >= 0.0f && barycentricCoord.y <= 1.0f &&
+			barycentricCoord.x >= 0.0f && barycentricCoord.x <= 1.0f) {
+			return true;
+		}
+	}
+
+	return false;
+}
