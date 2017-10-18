@@ -56,7 +56,7 @@
 
 
 // --------------------------------------------
-//#define BILINEAR_TEXTURE_FILTER
+// #define BILINEAR_TEXTURE_FILTER
 
 namespace {
 
@@ -1168,29 +1168,32 @@ void fillThisFragmentBuffer(Fragment& thisFragment,
 		TextureData r, g, b;
 
 #ifdef BILINEAR_TEXTURE_FILTER
-		lerp_uv.x = lerp_uv.x * diffuseTexWidth  - 0.5f;
-		lerp_uv.y = lerp_uv.y * diffuseTexHeight - 0.5f;
+		lerp_uv.x = glm::clamp(lerp_uv.x * diffuseTexWidth  - 0.5f, 0.f, diffuseTexWidth  - 1.0f);
+		lerp_uv.y = glm::clamp(lerp_uv.y * diffuseTexHeight - 0.5f, 0.f, diffuseTexHeight - 1.0f);
 
 		float x = glm::floor(lerp_uv.x);
 		float y = glm::floor(lerp_uv.y);
+
 		float u_ratio = lerp_uv.x - x;
 		float v_ratio = lerp_uv.y - y;
 		float u_opposite = 1.0f - u_ratio;
 		float v_opposite = 1.0f - v_ratio;
 
-
-		int textIdx = x + diffuseTexWidth * y;
+		int textIdx1 = x + diffuseTexWidth * y;
+		int textIdx2 = glm::clamp(x + 1.0f, 0.f, diffuseTexWidth - 1.0f) + diffuseTexWidth * y;
+		int textIdx3 = x + diffuseTexWidth * glm::clamp(y + 1.0f, 0.f, diffuseTexHeight - 1.0f);
+		int textIdx4 = glm::clamp(x + 1.0f, 0.f, diffuseTexWidth - 1.0f) + diffuseTexWidth * glm::clamp(y + 1.0f, 0.f, diffuseTexHeight - 1.0f);
 
 		int numOfTextureChannels = 3;
 
-		r = (u_opposite * textureData[textIdx * numOfTextureChannels] + u_ratio * textureData[(textIdx + 1) * numOfTextureChannels]) * v_opposite
-		  + (u_opposite * textureData[(textIdx + diffuseTexWidth) * numOfTextureChannels] + u_ratio * textureData[(textIdx + diffuseTexWidth + 1) * numOfTextureChannels]) * v_ratio;
+		r = (u_opposite * textureData[textIdx1 * numOfTextureChannels] + u_ratio * textureData[textIdx2 * numOfTextureChannels]) * v_opposite
+		  + (u_opposite * textureData[textIdx3 * numOfTextureChannels] + u_ratio * textureData[textIdx4 * numOfTextureChannels]) * v_ratio;
 
-		g = (u_opposite * textureData[textIdx * numOfTextureChannels + 1] + u_ratio * textureData[(textIdx + 1) * numOfTextureChannels + 1]) * v_opposite
-			+ (u_opposite * textureData[(textIdx + diffuseTexWidth) * numOfTextureChannels + 1] + u_ratio * textureData[(textIdx + diffuseTexWidth + 1) * numOfTextureChannels + 1]) * v_ratio;
+		g = (u_opposite * textureData[textIdx1 * numOfTextureChannels + 1] + u_ratio * textureData[textIdx2 * numOfTextureChannels + 1]) * v_opposite
+		  + (u_opposite * textureData[textIdx3 * numOfTextureChannels + 1] + u_ratio * textureData[textIdx4 * numOfTextureChannels + 1]) * v_ratio;
 		
-		b = (u_opposite * textureData[textIdx * numOfTextureChannels + 2] + u_ratio * textureData[(textIdx + 1) * numOfTextureChannels + 2]) * v_opposite
-			+ (u_opposite * textureData[(textIdx + diffuseTexWidth) * numOfTextureChannels + 2] + u_ratio * textureData[(textIdx + diffuseTexWidth + 1) * numOfTextureChannels + 2]) * v_ratio;
+		b = (u_opposite * textureData[textIdx1 * numOfTextureChannels + 2] + u_ratio * textureData[textIdx2 * numOfTextureChannels + 2]) * v_opposite
+		  + (u_opposite * textureData[textIdx3 * numOfTextureChannels + 2] + u_ratio * textureData[textIdx4 * numOfTextureChannels + 2]) * v_ratio;
 
 
 #else
