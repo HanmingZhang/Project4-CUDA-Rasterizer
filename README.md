@@ -99,12 +99,11 @@ GassianBlur white cow | GassianBlur wireframe cow + downscale by 5
 
 - #### Correct color interpolation between vertices on a primitive
   ##### I assign red, green and blue color to each vertex of our triangles, and interpolate color for each fragment. We can get a colorful cow like below. BTW, I turn on bloom effect here, which I think is cool.
-
-  ![](img/colorLerp_bloom.jpg)
-
   Acutally not only color, any property should use perspective correct interpolation, including normal or position. Like this duck, looks pretty smooth(correct normal interpolation) using Lambert shading
 
-  ![](img/duck.jpg)
+![](img/colorLerp_bloom.jpg) | ![](img/duck.jpg) | ![](img/milkTruck.jpg)
+-------------------------- | ---------------------------- | ----------------------------
+cow + color lerp + bloom | duck | cesium milk truck
 
 
 
