@@ -97,7 +97,7 @@ GassianBlur white cow | GassianBlur wireframe cow + downscale by 5
 
 
 - #### Correct color interpolation between vertices on a primitive
-  #### we assign red, green and blue color to each vertex of our triangles, and interpolate color for each fragment. We can get a colorful cow like below. BTW, I turn on bloom effect here, which I think is cool.
+  #### I assign red, green and blue color to each vertex of our triangles, and interpolate color for each fragment. We can get a colorful cow like below. BTW, I turn on bloom effect here, which I think is cool.
 
   ![](img/colorLerp_bloom.jpg)
 
@@ -130,7 +130,7 @@ wireframe cow | point cow
    Here are some detail images:
 
 ![](img/no_AA_detail.jpg) | ![](img/SSAAx2_detail.jpg) | ![](img/MSAAx2_detail.jpg)
--------------------------- | ----------------------------
+-------------------------- | ---------------------------- | ----------------------------
 no AA | SSAAx2 | MSAAx2
 
 
