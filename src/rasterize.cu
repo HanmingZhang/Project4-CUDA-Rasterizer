@@ -55,6 +55,9 @@
 //#define CORRECT_COLOR_LERP
 
 
+// --------------------------------------------
+//#define BILINEAR_TEXTURE_FILTER
+
 namespace {
 
 	typedef unsigned short VertexIndex;
@@ -1122,6 +1125,7 @@ void _primitiveAssembly(int numIndices, int curPrimitiveBeginId, Primitive* dev_
 
 
 
+
 __device__
 void fillThisFragmentBuffer(Fragment& thisFragment,
 						    glm::vec3 p, 
@@ -1161,6 +1165,35 @@ void fillThisFragmentBuffer(Fragment& thisFragment,
 
 	// Fetch color from texture
 	if (textureData != NULL) {
+		TextureData r, g, b;
+
+#ifdef BILINEAR_TEXTURE_FILTER
+		lerp_uv.x = lerp_uv.x * diffuseTexWidth  - 0.5f;
+		lerp_uv.y = lerp_uv.y * diffuseTexHeight - 0.5f;
+
+		float x = glm::floor(lerp_uv.x);
+		float y = glm::floor(lerp_uv.y);
+		float u_ratio = lerp_uv.x - x;
+		float v_ratio = lerp_uv.y - y;
+		float u_opposite = 1.0f - u_ratio;
+		float v_opposite = 1.0f - v_ratio;
+
+
+		int textIdx = x + diffuseTexWidth * y;
+
+		int numOfTextureChannels = 3;
+
+		r = (u_opposite * textureData[textIdx * numOfTextureChannels] + u_ratio * textureData[(textIdx + 1) * numOfTextureChannels]) * v_opposite
+		  + (u_opposite * textureData[(textIdx + diffuseTexWidth) * numOfTextureChannels] + u_ratio * textureData[(textIdx + diffuseTexWidth + 1) * numOfTextureChannels]) * v_ratio;
+
+		g = (u_opposite * textureData[textIdx * numOfTextureChannels + 1] + u_ratio * textureData[(textIdx + 1) * numOfTextureChannels + 1]) * v_opposite
+			+ (u_opposite * textureData[(textIdx + diffuseTexWidth) * numOfTextureChannels + 1] + u_ratio * textureData[(textIdx + diffuseTexWidth + 1) * numOfTextureChannels + 1]) * v_ratio;
+		
+		b = (u_opposite * textureData[textIdx * numOfTextureChannels + 2] + u_ratio * textureData[(textIdx + 1) * numOfTextureChannels + 2]) * v_opposite
+			+ (u_opposite * textureData[(textIdx + diffuseTexWidth) * numOfTextureChannels + 2] + u_ratio * textureData[(textIdx + diffuseTexWidth + 1) * numOfTextureChannels + 2]) * v_ratio;
+
+
+#else
 		glm::ivec2 textSpaceCoord = glm::ivec2(diffuseTexWidth * lerp_uv.x, diffuseTexHeight * (lerp_uv.y));
 
 		int textIdx = textSpaceCoord.x + diffuseTexWidth * textSpaceCoord.y;
@@ -1168,10 +1201,11 @@ void fillThisFragmentBuffer(Fragment& thisFragment,
 		// Assume texture data are row major
 		// and there are 3 channels
 		int numOfTextureChannels = 3;
-		TextureData r = textureData[textIdx * numOfTextureChannels];
-		TextureData g = textureData[textIdx * numOfTextureChannels + 1];
-		TextureData b = textureData[textIdx * numOfTextureChannels + 2];
+		r = textureData[textIdx * numOfTextureChannels];
+		g = textureData[textIdx * numOfTextureChannels + 1];
+		b = textureData[textIdx * numOfTextureChannels + 2];
 
+#endif // BILINEAR_TEXTURE_FILTER
 
 		thisFragment.color = glm::vec3((float)r / 255.0f, (float)g / 255.0f, (float)b / 255.0f);
 	}

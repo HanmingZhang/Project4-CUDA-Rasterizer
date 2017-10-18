@@ -25,6 +25,7 @@ wireframe cow + bloom(post processing) | wireframe cow
  -  Correct color (vertex property) interpolation between vertices on a primitive
  -  Wireframe / Points
  -  SSAA & \*MSAA (very strictly speaking, it's a "stupid" MSAA so far, still have problems, but it works in some "stupid" way, see related analysis below)
+ -  bilinear filtering
 
 ### Controls :
  - Left mouse button to rotate Camera
@@ -43,7 +44,7 @@ wireframe cow + bloom(post processing) | wireframe cow
  - #define **BACKFACE_CULLING_IN_PIPELINE** : back face culling in pipeline  (remove unwanted primitive using thrust::remove_if)
  - #define **BACKFACE_CULLING_IN_RASTERIZER** : back face culling in a naive way (directly do test in rasterize kernel)
  - #define **CORRECT_COLOR_LERP** :  Correct color interpolation between points on a primitive
-
+ - #define **BILINEAR_TEXTURE_FILTER** : texture bilinear filtering
 
 ### Project Analysis (Under x64 Release mode)
 - #### Basic rasterizer pipeline analysis
@@ -132,6 +133,16 @@ wireframe cow | point cow
 ![](img/no_AA_detail.jpg) | ![](img/SSAAx2_detail.jpg) | ![](img/MSAAx2_detail.jpg)
 -------------------------- | ---------------------------- | ----------------------------
 no AA | SSAAx2 | MSAAx2
+
+
+
+
+- #### bilinear texture filtering
+  ##### When fetching from texture, the texture is very likely not displayed exactly as it is stored. Because of this, most pixels will end up needing to use a point on the texture "between" texels. Bilinear filtering uses points to perform bilinear interpolation between the four texels to the point that the pixel represents. Refers to [Bilinear filtering](https://en.wikipedia.org/wiki/Bilinear_filtering)
+
+![](img/no_bilinear_filter.jpg) | ![](img/bilinear_filter.jpg)
+-------------------------- | ----------------------------
+no bilinear filtering | bilinear filtering
 
 
 
